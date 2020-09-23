@@ -102,12 +102,12 @@ jobs:
         name: builds-<< tgt.name >>
         path: artifacts/<< tgt.name >>
 
-    - name: Test
-      uses: edgedb/edgedb-pkg/integration/linux/test/<< tgt.name >>@master
-      env:
-        PKG_SUBDIST: "nightly"
-        PKG_PLATFORM: "<< tgt.platform >>"
-        PKG_PLATFORM_VERSION: "<< tgt.platform_version >>"
+#    - name: Test
+#      uses: edgedb/edgedb-pkg/integration/linux/test/<< tgt.name >>@master
+#      env:
+#        PKG_SUBDIST: "nightly"
+#        PKG_PLATFORM: "<< tgt.platform >>"
+#        PKG_PLATFORM_VERSION: "<< tgt.platform_version >>"
 
 <% endfor %>
 <% for tgt in targets.macos %>
@@ -127,13 +127,13 @@ jobs:
         name: builds-<< tgt.name >>
         path: artifacts/<< tgt.name >>
 
-    - name: Test
-      env:
-        PKG_SUBDIST: "nightly"
-        PKG_PLATFORM: "<< tgt.platform >>"
-        PKG_PLATFORM_VERSION: "<< tgt.platform_version >>"
-      run: |
-        edgedb-pkg/integration/macos/test.sh
+#    - name: Test
+#      env:
+#        PKG_SUBDIST: "nightly"
+#        PKG_PLATFORM: "<< tgt.platform >>"
+#        PKG_PLATFORM_VERSION: "<< tgt.platform_version >>"
+#      run: |
+#        edgedb-pkg/integration/macos/test.sh
 <% endfor %>
 <% for tgt in targets.linux %>
   publish-<< tgt.name >>:
