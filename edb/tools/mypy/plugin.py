@@ -26,6 +26,7 @@ from mypy import exprtotype
 import mypy.plugin as mypy_plugin
 from mypy import nodes
 from mypy import types
+from mypy import semanal
 from mypy.plugins import common as mypy_helpers
 from mypy.server import trigger as mypy_trigger
 
@@ -313,6 +314,15 @@ class StructTransformer(BaseStructTransformer):
 
         cls_info = ctx.cls.info
 
+        # If our self type has placeholders (probably because of type
+        # var bounds), defer. If we skip deferring and stick something
+        # in our symbol table anyway, we'll get in trouble.  (Arguably
+        # plugins.common ought to help us with this, but oh well.)
+        self_type = mypy_helpers.fill_typevars(cls_info)
+        if semanal.has_placeholder(self_type):
+            ctx.api.defer()
+            return None
+
         for f in fields:
             finfo = cls_info.names.get(f.name)
             if finfo is None:
@@ -330,6 +340,7 @@ class StructTransformer(BaseStructTransformer):
             mypy_helpers.add_method(
                 ctx,
                 '__init__',
+                self_type=self_type,
                 args=[field.to_argument() for field in fields],
                 return_type=types.NoneType(),
             )
