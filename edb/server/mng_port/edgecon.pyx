@@ -1847,6 +1847,9 @@ cdef class EdgeConnection:
         if self._write_waiter and not self._write_waiter.done():
             self._write_waiter.set_exception(ConnectionAbortedError())
 
+        if self._main_task is not None and not self._main_task.done():
+            self._main_task.cancel()
+
         self.abort()
 
     def data_received(self, data):
