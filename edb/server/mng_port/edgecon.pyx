@@ -175,8 +175,6 @@ cdef class EdgeConnection:
         self._transport = None
         self.buffer = ReadBuffer()
 
-        self._parsing = True
-        self._reading_messages = False
 
         self._main_task = None
         self._msg_take_waiter = None
@@ -190,7 +188,6 @@ cdef class EdgeConnection:
         self.query_cache_enabled = not (debug.flags.disable_qcache or
                                         debug.flags.edgeql_compile)
 
-        self.server = server
         self.authed = False
 
         self.protocol_version = max_protocol
@@ -1481,7 +1478,7 @@ cdef class EdgeConnection:
             return
 
         self.authed = True
-        self.server.on_client_authed()
+        self.port.on_client_authed()
 
         try:
             while True:
@@ -1828,7 +1825,7 @@ cdef class EdgeConnection:
         return out_buf
 
     def connection_made(self, transport):
-        if not self.server._accepting:
+        if not self.port._accepting:
             transport.abort()
             return
 
@@ -1840,7 +1837,7 @@ cdef class EdgeConnection:
 
     def connection_lost(self, exc):
         if self.authed:
-            self.server.on_client_disconnected()
+            self.port.on_client_disconnected()
 
         if (self._msg_take_waiter is not None and
                 not self._msg_take_waiter.done()):

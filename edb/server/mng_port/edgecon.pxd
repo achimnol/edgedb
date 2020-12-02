@@ -75,9 +75,6 @@ cdef class EdgeConnection:
 
     cdef:
         EdgeConnectionStatus _con_status
-        bint _awaiting
-        bint _parsing
-        bint _reading_messages
         bint _external_auth
         str _id
         object _transport
@@ -102,7 +99,6 @@ cdef class EdgeConnection:
         bint debug
         bint query_cache_enabled
 
-        object server
         bint authed
 
         tuple protocol_version
