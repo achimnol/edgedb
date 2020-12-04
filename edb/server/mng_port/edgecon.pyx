@@ -826,7 +826,7 @@ cdef class EdgeConnection:
                 packet = WriteBuffer.new()
                 packet.write_buffer(
                     self.make_command_complete_msg(query_unit))
-                packet.write_buffer(self.pgcon_last_sync_status())
+                packet.write_buffer(self.sync_status())
                 self.write(packet)
                 self.flush()
                 return
@@ -835,7 +835,7 @@ cdef class EdgeConnection:
 
         packet = WriteBuffer.new()
         packet.write_buffer(self.make_command_complete_msg(query_unit))
-        packet.write_buffer(self.pgcon_last_sync_status())
+        packet.write_buffer(self.sync_status())
         self.write(packet)
         self.flush()
 
@@ -957,7 +957,6 @@ cdef class EdgeConnection:
             query_unit,  # =query
             self,        # =edgecon
             None,        # =bind_data
-            0,           # =send_sync
             0,           # =use_prep_stmt
         )
 
@@ -1229,83 +1228,54 @@ cdef class EdgeConnection:
             self.write(self.make_command_complete_msg(query_unit))
             return
 
+        bound_args_buf = self.recode_bind_args(bind_args, compiled)
 
-        process_sync = False
-        if self.buffer.take_message_type(b'S'):
-            # A "Sync" message follows this "Execute" message;
-            # send it right away.
-            process_sync = True
-
+        self.dbview.start(query_unit)
         try:
-            bound_args_buf = self.recode_bind_args(bind_args, compiled)
-
-            self.dbview.start(query_unit)
-            try:
-                if query_unit.system_config:
-                    await self._execute_system_config(query_unit)
-                else:
-                    await self.get_backend().pgcon.parse_execute(
-                        parse,              # =parse
-                        1,                  # =execute
-                        query_unit,         # =query
-                        self,               # =edgecon
-                        bound_args_buf,     # =bind_data
-                        process_sync,       # =send_sync
-                        use_prep_stmt,      # =use_prep_stmt
-                    )
-                    if query_unit.config_ops:
-                        await self.dbview.apply_config_ops(
-                            self.get_backend().pgcon,
-                            query_unit.config_ops)
-            except ConnectionAbortedError:
-                raise
-            except Exception:
-                self.dbview.on_error(query_unit)
-
-                if not process_sync and self.dbview.in_tx():
-                    # An exception occurred while in transaction.
-                    # This "execute" command is not immediately followed by
-                    # a "sync" command, so we don't know the current tx
-                    # status of the Postgres connection.  Query it to
-                    # be able to figure out the tx status of this EdgeDB
-                    # connection with the next "if" block.
-                    await self.get_backend().pgcon.sync()
-
-                if (not self.get_backend().pgcon.in_tx() and
-                        self.dbview.in_tx()):
-                    # COMMIT command can fail, in which case the
-                    # transaction is finished.  This check workarounds
-                    # that (until a better solution is found.)
-                    self.dbview.abort_tx()
-                    await self.recover_current_tx_info()
-                raise
+            if query_unit.system_config:
+                await self._execute_system_config(query_unit)
             else:
-                side_effects = self.dbview.on_success(query_unit)
-                if side_effects & dbview.SideEffects.SchemaChanges:
-                    await self.get_backend().pgcon.signal_sysevent(
-                        'schema-changes', dbver=self.dbview.dbver.hex())
-                if side_effects & dbview.SideEffects.DatabaseConfigChanges:
-                    await self.get_backend().pgcon.signal_sysevent(
-                        'database-config-changes', dbname=self.dbview.dbname)
-                if side_effects & dbview.SideEffects.SystemConfigChanges:
-                    await self.get_backend().pgcon.signal_sysevent(
-                        'system-config-changes')
-
-            self.write(self.make_command_complete_msg(query_unit))
-
-            if process_sync:
-                self.write(self.pgcon_last_sync_status())
-                self.flush()
+                await self.get_backend().pgcon.parse_execute(
+                    parse,              # =parse
+                    1,                  # =execute
+                    query_unit,         # =query
+                    self,               # =edgecon
+                    bound_args_buf,     # =bind_data
+                    use_prep_stmt,      # =use_prep_stmt
+                )
+                if query_unit.config_ops:
+                    await self.dbview.apply_config_ops(
+                        self.get_backend().pgcon,
+                        query_unit.config_ops)
+        except ConnectionAbortedError:
+            raise
         except Exception:
-            if process_sync:
-                self.buffer.put_message()
+            self.dbview.on_error(query_unit)
+
+            if (not self.get_backend().pgcon.in_tx() and
+                    self.dbview.in_tx()):
+                # COMMIT command can fail, in which case the
+                # transaction is finished.  This check workarounds
+                # that (until a better solution is found.)
+                self.dbview.abort_tx()
+                await self.recover_current_tx_info()
             raise
         else:
-            if process_sync:
-                self.buffer.finish_message()
+            side_effects = self.dbview.on_success(query_unit)
+            if side_effects & dbview.SideEffects.SchemaChanges:
+                await self.get_backend().pgcon.signal_sysevent(
+                    'schema-changes', dbver=self.dbview.dbver.hex())
+            if side_effects & dbview.SideEffects.DatabaseConfigChanges:
+                await self.get_backend().pgcon.signal_sysevent(
+                    'database-config-changes', dbname=self.dbview.dbname)
+            if side_effects & dbview.SideEffects.SystemConfigChanges:
+                await self.get_backend().pgcon.signal_sysevent(
+                    'system-config-changes')
 
-            if query_unit.new_types and self.dbview.in_tx():
-                await self._update_type_ids(query_unit.new_types)
+        self.write(self.make_command_complete_msg(query_unit))
+
+        if query_unit.new_types and self.dbview.in_tx():
+            await self._update_type_ids(query_unit.new_types)
 
     async def _get_backend_tids(self, tids):
         conn = self.get_backend().pgcon
@@ -1346,9 +1316,7 @@ cdef class EdgeConnection:
                     typemap)
 
     async def execute(self):
-        cdef:
-            WriteBuffer bound_args_buf
-            bint process_sync
+        cdef WriteBuffer bound_args_buf
 
         self.reject_headers()
         stmt_name = self.buffer.read_len_prefixed_bytes()
@@ -1378,7 +1346,6 @@ cdef class EdgeConnection:
             bytes query
             QueryRequestInfo query_req
 
-            bint process_sync
             bytes in_tid
             bytes out_tid
             bytes bound_args
@@ -1434,9 +1401,7 @@ cdef class EdgeConnection:
 
     async def sync(self):
         self.buffer.consume_message()
-
-        await self.get_backend().pgcon.sync()
-        self.write(self.pgcon_last_sync_status())
+        self.write(self.sync_status())
 
         if self.debug:
             self.debug_print(
@@ -1554,7 +1519,7 @@ cdef class EdgeConnection:
                             raise
 
                     if flush_sync_on_error:
-                        self.write(self.pgcon_last_sync_status())
+                        self.write(self.sync_status())
                         self.flush()
                     else:
                         await self.recover_from_error()
@@ -1713,25 +1678,25 @@ cdef class EdgeConnection:
 
         self.write(buf)
 
-    cdef pgcon_last_sync_status(self):
-        cdef:
-            pgcon.PGTransactionStatus xact_status
-            WriteBuffer buf
-
-        xact_status = <pgcon.PGTransactionStatus>(
-            (<pgcon.PGProto>self.get_backend().pgcon).xact_status)
+    cdef sync_status(self):
+        cdef WriteBuffer buf
 
         buf = WriteBuffer.new_message(b'Z')
         buf.write_int16(0)  # no headers
-        if xact_status == pgcon.PQTRANS_IDLE:
-            buf.write_byte(b'I')
-        elif xact_status == pgcon.PQTRANS_INTRANS:
-            buf.write_byte(b'T')
-        elif xact_status == pgcon.PQTRANS_INERROR:
+
+        # NOTE: EdgeDB and PostgreSQL current statuses can disagree.
+        # For example, Postres can be "PQTRANS_INTRANS" whereas EdgeDB
+        # would be "PQTRANS_INERROR". This can happen becuase some of
+        # EdgeDB errors can happen at the compile stage, not even
+        # reaching Postgres.
+
+        if self.dbview.in_tx_error():
             buf.write_byte(b'E')
+        elif self.dbview.in_tx():
+            buf.write_byte(b'T')
         else:
-            raise errors.InternalServerError(
-                'unknown postgres connection status')
+            buf.write_byte(b'I')
+
         return buf.end_message()
 
     cdef fallthrough(self):

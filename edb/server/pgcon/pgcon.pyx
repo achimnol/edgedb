@@ -502,7 +502,6 @@ cdef class PGProto:
         object query,
         edgecon.EdgeConnection edgecon,
         WriteBuffer bind_data,
-        bint send_sync,
         bint use_prep_stmt,
     ):
         cdef:
@@ -589,11 +588,8 @@ cdef class PGProto:
                 buf.write_int32(0)  # limit: 0 - return all rows
                 packet.write_buffer(buf.end_message())
 
-        if send_sync:
-            packet.write_bytes(SYNC_MESSAGE)
-            self.waiting_for_sync = True
-        else:
-            packet.write_bytes(FLUSH_MESSAGE)
+        packet.write_bytes(SYNC_MESSAGE)
+        self.waiting_for_sync = True
         self.write(packet)
 
         try:
@@ -672,8 +668,7 @@ cdef class PGProto:
                 finally:
                     self.buffer.finish_message()
         finally:
-            if send_sync:
-                await self.wait_for_sync()
+            await self.wait_for_sync()
 
     async def parse_execute(
         self,
@@ -682,7 +677,6 @@ cdef class PGProto:
         object query,
         edgecon.EdgeConnection edgecon,
         WriteBuffer bind_data,
-        bint send_sync,
         bint use_prep_stmt,
     ):
         self.before_command()
@@ -693,7 +687,6 @@ cdef class PGProto:
                 query,
                 edgecon,
                 bind_data,
-                send_sync,
                 use_prep_stmt,
             )
         finally:
@@ -1246,6 +1239,5 @@ cdef class PGProto:
 
 
 cdef bytes SYNC_MESSAGE = bytes(WriteBuffer.new_message(b'S').end_message())
-cdef bytes FLUSH_MESSAGE = bytes(WriteBuffer.new_message(b'H').end_message())
 
 cdef EdegDBCodecContext DEFAULT_CODEC_CONTEXT = EdegDBCodecContext()
