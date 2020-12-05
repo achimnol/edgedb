@@ -87,10 +87,23 @@ def _build_init_con_script() -> bytes:
             UNIQUE(_sentinel)
         );
 
+        PREPARE _clear_state AS
+            DELETE FROM _edgecon_state
+            WHERE _edgecon_state.type != 'R';
+
+        PREPARE _apply_state(jsonb) AS
+            INSERT INTO
+                _edgecon_state(name, value, type)
+            SELECT
+                e->>'name' AS name,
+                e->>'value' AS value,
+                e->>'type' AS type
+            FROM
+                jsonb_array_elements($1::jsonb) AS e;
+
         INSERT INTO _edgecon_state
             (name, value, type)
         VALUES
-            ('', {pg_ql(defines.DEFAULT_MODULE_ALIAS)}, 'A'),
             ('server_version', {pg_ql(buildmeta.get_version_json())}, 'R');
 
         LISTEN __edgedb_sysevent__;
@@ -107,17 +120,17 @@ async def connect(connargs, dbname):
 
     if host.startswith('/'):
         addr = os.path.join(host, f'.s.PGSQL.{port}')
-        _, protocol = await loop.create_unix_connection(
+        _, pgcon = await loop.create_unix_connection(
             lambda: PGProto(dbname, loop, connargs), addr)
 
     else:
-        _, protocol = await loop.create_connection(
+        _, pgcon = await loop.create_connection(
             lambda: PGProto(dbname, loop, connargs), host=host, port=port)
 
-    await protocol.connect()
+    await pgcon.connect()
 
     if connargs['user'] != defines.EDGEDB_SUPERUSER:
-        await protocol.simple_query(
+        await pgcon.simple_query(
             f'SET SESSION AUTHORIZATION {defines.EDGEDB_SUPERUSER}'.encode(),
             ignore_data=True,
         )
@@ -125,9 +138,9 @@ async def connect(connargs, dbname):
     if INIT_CON_SCRIPT is None:
         INIT_CON_SCRIPT = _build_init_con_script()
 
-    await protocol.simple_query(INIT_CON_SCRIPT, ignore_data=True)
+    await pgcon.simple_query(INIT_CON_SCRIPT, ignore_data=True)
 
-    return protocol
+    return pgcon
 
 
 @cython.final
@@ -495,6 +508,67 @@ cdef class PGProto:
         finally:
             self.after_command()
 
+    def _build_apply_state_req(self, bytes serstate, WriteBuffer out):
+        cdef:
+            WriteBuffer buf
+
+        buf = WriteBuffer.new_message(b'B')
+        buf.write_bytestring(b'')  # portal name
+        buf.write_bytestring(b'_clear_state')  # statement name
+        buf.write_int16(0)  # number of format codes
+        buf.write_int16(0)  # number of parameters
+        buf.write_int16(0)  # number of result columns
+        out.write_buffer(buf.end_message())
+
+        buf = WriteBuffer.new_message(b'E')
+        buf.write_bytestring(b'')  # portal name
+        buf.write_int32(0)  # limit: 0 - return all rows
+        out.write_buffer(buf.end_message())
+
+        if serstate is not None:
+            buf = WriteBuffer.new_message(b'B')
+            buf.write_bytestring(b'')  # portal name
+            buf.write_bytestring(b'_apply_state')  # statement name
+            buf.write_int16(1)  # number of format codes
+            buf.write_int16(1)  # binary
+            buf.write_int16(1)  # number of parameters
+            buf.write_int32(len(serstate) + 1)
+            buf.write_byte(1)  # jsonb format version
+            buf.write_bytes(serstate)
+            buf.write_int16(0)  # number of result columns
+            out.write_buffer(buf.end_message())
+
+            buf = WriteBuffer.new_message(b'E')
+            buf.write_bytestring(b'')  # portal name
+            buf.write_int32(0)  # limit: 0 - return all rows
+            out.write_buffer(buf.end_message())
+
+    async def _parse_apply_state_resp(self, bytes serstate):
+        cdef int num_completed = 0
+        while True:
+            if not self.buffer.take_message():
+                await self.wait_for_message()
+            mtype = self.buffer.get_message_type()
+
+            if mtype == b'2':
+                # BindComplete
+                self.buffer.discard_message()
+
+            elif mtype == b'E':
+                er = self.parse_error_message()
+                raise pgerror.BackendError(fields=er)
+
+            elif mtype == b'C':
+                self.buffer.discard_message()
+                num_completed += 1
+                if (
+                    (serstate is not None and num_completed == 2) or
+                    (serstate is None and num_completed == 1)
+                ):
+                    return
+            else:
+                self.fallthrough()
+
     async def _parse_execute(
         self,
         bint parse,
@@ -503,9 +577,10 @@ cdef class PGProto:
         edgecon.EdgeConnection edgecon,
         WriteBuffer bind_data,
         bint use_prep_stmt,
+        bytes state
     ):
         cdef:
-            WriteBuffer packet
+            WriteBuffer out
             WriteBuffer buf
             bytes stmt_name
             bint store_stmt = 0
@@ -520,20 +595,23 @@ cdef class PGProto:
         if not parse and not execute:
             raise RuntimeError('invalid parse/execute call')
 
-        packet = WriteBuffer.new()
+        out = WriteBuffer.new()
+
+        if state is not None and execute:
+            self._build_apply_state_req(state, out)
 
         if use_prep_stmt:
             assert parse and execute
             stmt_name = query.sql_hash
             parse, store_stmt = self.before_prepare(
-                stmt_name, query.dbver, packet)
+                stmt_name, query.dbver, out)
         else:
             stmt_name = b''
 
         if parse:
             if len(self.last_parse_prep_stmts):
                 for stmt_name_to_clean in self.last_parse_prep_stmts:
-                    packet.write_buffer(
+                    out.write_buffer(
                         self.make_clean_stmt_message(stmt_name_to_clean))
                 self.last_parse_prep_stmts.clear()
 
@@ -546,7 +624,7 @@ cdef class PGProto:
                     buf.write_bytestring(pname)
                     buf.write_bytestring(sql)
                     buf.write_int16(0)
-                    packet.write_buffer(buf.end_message())
+                    out.write_buffer(buf.end_message())
                     i += 1
             else:
                 if len(query.sql) != 1:
@@ -558,7 +636,7 @@ cdef class PGProto:
                 buf.write_bytestring(stmt_name)
                 buf.write_bytestring(query.sql[0])
                 buf.write_int16(0)
-                packet.write_buffer(buf.end_message())
+                out.write_buffer(buf.end_message())
 
         if execute:
             assert bind_data is not None
@@ -569,30 +647,33 @@ cdef class PGProto:
                     buf.write_bytestring(b'')  # portal name
                     buf.write_bytestring(s)  # statement name
                     buf.write_buffer(bind_data)
-                    packet.write_buffer(buf.end_message())
+                    out.write_buffer(buf.end_message())
 
                     buf = WriteBuffer.new_message(b'E')
                     buf.write_bytestring(b'')  # portal name
                     buf.write_int32(0)  # limit: 0 - return all rows
-                    packet.write_buffer(buf.end_message())
+                    out.write_buffer(buf.end_message())
 
             else:
                 buf = WriteBuffer.new_message(b'B')
                 buf.write_bytestring(b'')  # portal name
                 buf.write_bytestring(stmt_name)  # statement name
                 buf.write_buffer(bind_data)
-                packet.write_buffer(buf.end_message())
+                out.write_buffer(buf.end_message())
 
                 buf = WriteBuffer.new_message(b'E')
                 buf.write_bytestring(b'')  # portal name
                 buf.write_int32(0)  # limit: 0 - return all rows
-                packet.write_buffer(buf.end_message())
+                out.write_buffer(buf.end_message())
 
-        packet.write_bytes(SYNC_MESSAGE)
+        out.write_bytes(SYNC_MESSAGE)
         self.waiting_for_sync = True
-        self.write(packet)
+        self.write(out)
 
         try:
+            if state is not None and execute:
+                await self._parse_apply_state_resp(state)
+
             buf = None
             while True:
                 if not self.buffer.take_message():
@@ -678,6 +759,7 @@ cdef class PGProto:
         edgecon.EdgeConnection edgecon,
         WriteBuffer bind_data,
         bint use_prep_stmt,
+        bytes state
     ):
         self.before_command()
         try:
@@ -688,23 +770,34 @@ cdef class PGProto:
                 edgecon,
                 bind_data,
                 use_prep_stmt,
+                state,
             )
         finally:
             self.after_command()
 
-    async def _simple_query(self, bytes sql, bint ignore_data):
+    async def _simple_query(self, bytes sql, bint ignore_data, bytes state):
         cdef:
-            WriteBuffer packet
+            WriteBuffer out
             WriteBuffer buf
+
+        out = WriteBuffer.new()
+
+        if state is not None:
+            self._build_apply_state_req(state, out)
 
         buf = WriteBuffer.new_message(b'Q')
         buf.write_bytestring(sql)
-        self.write(buf.end_message())
+        out.write_buffer(buf.end_message())
+
+        self.write(out)
 
         exc = None
         result = None
 
         self.waiting_for_sync = True
+
+        if state is not None:
+            await self._parse_apply_state_resp(state)
 
         while True:
             if not self.buffer.take_message():
@@ -758,10 +851,15 @@ cdef class PGProto:
             raise pgerror.BackendError(fields=exc)
         return result
 
-    async def simple_query(self, bytes sql, bint ignore_data):
+    async def simple_query(
+        self,
+        bytes sql,
+        bint ignore_data,
+        bytes state=None
+    ):
         self.before_command()
         try:
-            return await self._simple_query(sql, ignore_data)
+            return await self._simple_query(sql, ignore_data, state)
         finally:
             self.after_command()
 
@@ -1239,5 +1337,6 @@ cdef class PGProto:
 
 
 cdef bytes SYNC_MESSAGE = bytes(WriteBuffer.new_message(b'S').end_message())
+cdef bytes FLUSH_MESSAGE = bytes(WriteBuffer.new_message(b'H').end_message())
 
 cdef EdegDBCodecContext DEFAULT_CODEC_CONTEXT = EdegDBCodecContext()

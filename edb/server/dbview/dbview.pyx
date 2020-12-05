@@ -16,7 +16,6 @@
 # limitations under the License.
 #
 
-
 import json
 import os.path
 import pickle
@@ -32,6 +31,13 @@ from edb.pgsql import dbops
 
 
 __all__ = ('DatabaseIndex', 'DatabaseConnectionView', 'SideEffects')
+
+cdef DEFAULT_MODALIASES = immutables.Map({None: defines.DEFAULT_MODULE_ALIAS})
+cdef DEFAULT_CONFIG = immutables.Map()
+cdef DEFAULT_STATE = json.dumps([
+    {"name": n or '', "value": v, "type": "A"}
+    for n, v in DEFAULT_MODALIASES.items()
+]).encode('utf-8')
 
 
 cdef class Database:
@@ -83,10 +89,10 @@ cdef class DatabaseConnectionView:
 
         self._user = user
 
-        self._config = immutables.Map()
+        self._modaliases = DEFAULT_MODALIASES
+        self._config = DEFAULT_CONFIG
+        self._session_state_cache = None
         self._in_tx_config = None
-
-        self._modaliases = immutables.Map({None: defines.DEFAULT_MODULE_ALIAS})
 
         # Whenever we are in a transaction that had executed a
         # DDL command, we use this cache for compiled queries.
@@ -147,6 +153,44 @@ cdef class DatabaseConnectionView:
             self._in_tx_config = new_conf
         else:
             self._config = new_conf
+
+    cdef bytes serialize_state(self):
+        cdef list state
+        if self._in_tx:
+            raise errors.InternalServerError(
+                'no need to serialize state while in transaction')
+        if (
+            self._config == DEFAULT_CONFIG and
+            self._modaliases == DEFAULT_MODALIASES
+        ):
+            return DEFAULT_STATE
+
+        if self._session_state_cache is not None:
+            if (
+                self._session_state_cache[0] == self._config and
+                self._session_state_cache[1] == self._modaliases
+            ):
+                return self._session_state_cache[2]
+
+        state = []
+        for key, val in self._modaliases.items():
+            state.append(
+                {"name": key or '', "value": val, "type": "A"}
+            )
+        if self._config:
+            settings = config.get_settings()
+            for sval in self._config.values():
+                setting = settings[sval.name]
+                if setting.backend_setting:
+                    # We don't store PostgreSQL config settings in
+                    # the _edgecon_state temp table.
+                    continue
+                jval = config.value_to_json_value(setting, sval.value)
+                state.append({"name": sval.name, "value": jval, "type": "C"})
+
+        spec = json.dumps(state).encode('utf-8')
+        self._session_state_cache = (self._config, self._modaliases, spec)
+        return spec
 
     property modaliases:
         def __get__(self):

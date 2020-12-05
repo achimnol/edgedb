@@ -58,6 +58,7 @@ cdef class DatabaseConnectionView:
 
         object _config
         object _modaliases
+        tuple _session_state_cache
 
         object _eql_to_compiled
 
@@ -94,3 +95,5 @@ cdef class DatabaseConnectionView:
 
     cdef get_session_config(self)
     cdef set_session_config(self, new_conf)
+
+    cdef bytes serialize_state(self)

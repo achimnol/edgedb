@@ -840,6 +840,10 @@ cdef class EdgeConnection:
         self.flush()
 
     async def _simple_query(self, eql: bytes):
+        cdef:
+            bytes state = None
+            int i
+
         stmt_mode = 'all'
         with self.timer.timed("Query compilation"):
             units = await self._compile_script(eql, stmt_mode=stmt_mode)
@@ -851,13 +855,23 @@ cdef class EdgeConnection:
                 if query_unit.system_config:
                     await self._execute_system_config(query_unit)
                 else:
+                    if not self.dbview.in_tx():
+                        state = self.dbview.serialize_state()
+
                     if query_unit.is_transactional:
                         await self.get_backend().pgcon.simple_query(
-                            b';'.join(query_unit.sql), ignore_data=True)
+                            b';'.join(query_unit.sql),
+                            ignore_data=True,
+                            state=state)
                     else:
+                        i = 0
                         for sql in query_unit.sql:
                             await self.get_backend().pgcon.simple_query(
-                                sql, ignore_data=True)
+                                sql,
+                                ignore_data=True,
+                                state=state if i == 0 else None)
+                            # only apply state to the first query.
+                            i += 1
 
                     if query_unit.config_ops:
                         await self.dbview.apply_config_ops(
@@ -958,6 +972,7 @@ cdef class EdgeConnection:
             self,        # =edgecon
             None,        # =bind_data
             0,           # =use_prep_stmt
+            None,        # =state
         )
 
         if not cached and query_unit.cacheable:
@@ -1211,6 +1226,9 @@ cdef class EdgeConnection:
 
     async def _execute(self, compiled: CompiledQuery, bind_args,
                        bint parse, bint use_prep_stmt):
+        cdef:
+            bytes state = None
+
         query_unit = compiled.query_unit
         if self.dbview.in_tx_error():
             if not (query_unit.tx_savepoint_rollback or query_unit.tx_rollback):
@@ -1235,6 +1253,9 @@ cdef class EdgeConnection:
             if query_unit.system_config:
                 await self._execute_system_config(query_unit)
             else:
+                if not self.dbview.in_tx():
+                    state = self.dbview.serialize_state()
+
                 await self.get_backend().pgcon.parse_execute(
                     parse,              # =parse
                     1,                  # =execute
@@ -1242,6 +1263,7 @@ cdef class EdgeConnection:
                     self,               # =edgecon
                     bound_args_buf,     # =bind_data
                     use_prep_stmt,      # =use_prep_stmt
+                    state,              # =state
                 )
                 if query_unit.config_ops:
                     await self.dbview.apply_config_ops(
@@ -1654,9 +1676,10 @@ cdef class EdgeConnection:
             else:
                 exc = static_exc
 
-        except Exception as ex:
+        except Exception:
             exc = RuntimeError(
-                'unhandled error while calling interpret_backend_error()')
+                'unhandled error while calling interpret_backend_error(); '
+                'run with EDGEDB_DEBUG_SERVER to debug.')
 
         return exc
 
