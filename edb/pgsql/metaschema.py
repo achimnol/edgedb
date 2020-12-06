@@ -566,7 +566,8 @@ class AssertJSONTypeFunction(dbops.Function):
                     'wrong_object_type',
                     coalesce(
                         msg,
-                        'expected json ' || array_to_string(typenames, ', ') ||
+                        'expected json ' ||
+                        array_to_string(typenames, ' or ') ||
                         '; got json ' || coalesce(jsonb_typeof(val), 'UNKNOWN')
                     ),
                     det,
