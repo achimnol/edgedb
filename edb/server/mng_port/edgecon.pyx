@@ -331,8 +331,7 @@ cdef class EdgeConnection:
         if self._external_auth:
             authmethod_name = 'Trust'
         else:
-            authmethod = await self.port.get_server().get_auth_method(
-                user, self._transport)
+            authmethod = await self.port.get_server().get_auth_method(user)
             authmethod_name = type(authmethod).__name__
 
         if authmethod_name == 'SCRAM':
@@ -1349,7 +1348,7 @@ cdef class EdgeConnection:
 
             compiled = self._last_anon_compiled
 
-        await self._execute(compiled, bind_args, False, False)
+        await self._execute(compiled, bind_args, True, False)
 
     async def optimistic_execute(self):
         cdef:

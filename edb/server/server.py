@@ -349,7 +349,7 @@ class Server:
             g.create_task(self._mgmt_port.stop())
             self._mgmt_port = None
 
-    async def get_auth_method(self, user, conn):
+    async def get_auth_method(self, user):
         authlist = self._sys_auth
 
         if not authlist:
