@@ -965,16 +965,6 @@ cdef class EdgeConnection:
             if not (query_unit.tx_rollback or query_unit.tx_savepoint_rollback):
                 self.dbview.raise_in_tx_error()
 
-        await self.get_backend().pgcon.parse_execute(
-            1,           # =parse
-            0,           # =execute
-            query_unit,  # =query
-            self,        # =edgecon
-            None,        # =bind_data
-            0,           # =use_prep_stmt
-            None,        # =state
-        )
-
         if not cached and query_unit.cacheable:
             self.dbview.cache_compiled_query(query_req, query_unit)
 
