@@ -23,7 +23,6 @@ import codecs
 import hashlib
 import json
 import os.path
-import weakref
 
 cimport cython
 cimport cpython
@@ -35,7 +34,6 @@ from libc.stdint cimport int8_t, uint8_t, int16_t, uint16_t, \
 from edb import errors
 
 from edb.schema import objects as s_obj
-from edb.server import defines
 
 from edb.pgsql.common import quote_literal as pg_ql
 
@@ -105,8 +103,6 @@ def _build_init_con_script() -> bytes:
             (name, value, type)
         VALUES
             ('server_version', {pg_ql(buildmeta.get_version_json())}, 'R');
-
-        LISTEN __edgedb_sysevent__;
     ''').encode('utf-8')
 
 
@@ -121,11 +117,11 @@ async def connect(connargs, dbname):
     if host.startswith('/'):
         addr = os.path.join(host, f'.s.PGSQL.{port}')
         _, pgcon = await loop.create_unix_connection(
-            lambda: PGProto(dbname, loop, connargs), addr)
+            lambda: PGConnection(dbname, loop, connargs), addr)
 
     else:
         _, pgcon = await loop.create_connection(
-            lambda: PGProto(dbname, loop, connargs), host=host, port=port)
+            lambda: PGConnection(dbname, loop, connargs), host=host, port=port)
 
     await pgcon.connect()
 
@@ -160,7 +156,7 @@ cdef class EdegDBCodecContext(pgproto.CodecContext):
 
 
 @cython.final
-cdef class PGProto:
+cdef class PGConnection:
 
     def __init__(self, dbname, loop, addr):
         self.buffer = ReadBuffer()
@@ -186,7 +182,7 @@ cdef class PGProto:
         self.debug = debug.flags.server_proto
 
         self.pgaddr = addr
-        self.edgecon_ref = None
+        self.server = None
 
         self.idle = True
 
@@ -195,9 +191,6 @@ cdef class PGProto:
             '::PGPROTO::',
             *args,
         )
-
-    def set_edgecon(self, edgecon.EdgeConnection edgecon):
-        self.edgecon_ref = weakref.ref(edgecon)
 
     def get_pgaddr(self):
         return self.pgaddr
@@ -230,7 +223,16 @@ cdef class PGProto:
             self.msg_waiter.set_exception(ConnectionAbortedError())
             self.msg_waiter = None
 
+    async def set_server(self, server):
+        assert self.dbname == defines.EDGEDB_SYSTEM_DB
+        await self.simple_query(
+            b'LISTEN __edgedb_sysevent__;',
+            ignore_data=True
+        )
+        self.server = server
+
     async def signal_sysevent(self, event, **kwargs):
+        assert self.dbname == defines.EDGEDB_SYSTEM_DB
         event = json.dumps({
             'event': event,
             'args': kwargs,
@@ -1192,22 +1194,14 @@ cdef class PGProto:
                 event = event_data.get('event')
                 event_payload = event_data.get('args')
                 if event == 'schema-changes':
+                    dbname = event_payload['dbname']
                     dbver = bytes.fromhex(event_payload['dbver'])
-                    if self.edgecon_ref is not None:
-                        edgecon = self.edgecon_ref()
-                        if edgecon is not None:
-                            edgecon.on_remote_ddl(dbver)
+                    self.server._on_remote_ddl(dbname, dbver)
                 elif event == 'database-config-changes':
                     dbname = event_payload['dbname']
-                    if self.edgecon_ref is not None and dbname == self.dbname:
-                        edgecon = self.edgecon_ref()
-                        if edgecon is not None:
-                            edgecon.on_remote_config_change()
+                    self.server._on_remote_database_config_change(dbname)
                 elif event == 'system-config-changes':
-                    if self.edgecon_ref is not None:
-                        edgecon = self.edgecon_ref()
-                        if edgecon is not None:
-                            edgecon.on_remote_config_change()
+                    self.server._on_remote_system_config_change()
                 else:
                     raise AssertionError(f'unexpected system event: {event!r}')
 

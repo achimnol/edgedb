@@ -20,6 +20,7 @@
 from __future__ import annotations
 from typing import *
 
+import asyncio
 import json
 import logging
 
@@ -57,6 +58,7 @@ class Server:
 
     _ports: List[baseport.Port]
     _sys_conf_ports: Dict[config.ConfigType, baseport.Port]
+    _sys_pgcon: Optional[pgcon.PGConnection]
 
     def __init__(
         self,
@@ -105,8 +107,19 @@ class Server:
 
         self._startup_script = startup_script
 
+        # Never use `self.__sys_pgcon` directly; get it via
+        # `await self._acquire_sys_pgcon()`.
+        self.__sys_pgcon = None
+        self._sys_pgcon_waiters = None
+
     async def init(self):
         self._dbindex = await dbview.DatabaseIndex.init(self)
+
+        self.__sys_pgcon = await self.new_pgcon(defines.EDGEDB_SYSTEM_DB)
+        await self.__sys_pgcon.set_server(self)
+        self._sys_pgcon_waiters = asyncio.Queue()
+        self._sys_pgcon_waiters.put_nowait(self.__sys_pgcon)
+
         self._populate_sys_auth()
 
         cfg = self._dbindex.get_sys_config()
@@ -293,6 +306,36 @@ class Server:
         # CONFIGURE SYSTEM RESET setting_name;
         pass
 
+    async def _acquire_sys_pgcon(self):
+        if self._sys_pgcon_waiters is None:
+            raise RuntimeError('invalid request to acquire a system pgcon')
+        return await self._sys_pgcon_waiters.get()
+
+    def _release_sys_pgcon(self):
+        self._sys_pgcon_waiters.put_nowait(self.__sys_pgcon)
+
+    async def _signal_sysevent(self, event, **kwargs):
+        pgcon = await self._acquire_sys_pgcon()
+        try:
+            await pgcon.signal_sysevent(event, **kwargs)
+        finally:
+            self._release_sys_pgcon()
+
+    def _on_remote_ddl(self, dbname, dbver):
+        # Triggered by a postgres notification event 'schema-changes'
+        # on the __edgedb_sysevent__ channel
+        self._dbindex._on_remote_ddl(dbname, dbver)
+
+    def _on_remote_database_config_change(self, dbname):
+        # Triggered by a postgres notification event 'database-config-changes'
+        # on the __edgedb_sysevent__ channel
+        self._dbindex._on_remote_database_config_change(dbname)
+
+    def _on_remote_system_config_change(self):
+        # Triggered by a postgres notification event 'ystem-config-changes'
+        # on the __edgedb_sysevent__ channel
+        self._dbindex._on_remote_system_config_change()
+
     def add_port(self, portcls, **kwargs):
         if self._serving:
             raise RuntimeError(
@@ -337,17 +380,23 @@ class Server:
             print(f'\nEDGEDB_SERVER_DATA:{json.dumps(ri)}\n', flush=True)
 
     async def stop(self):
-        self._serving = False
+        try:
+            self._serving = False
 
-        async with taskgroup.TaskGroup() as g:
-            for port in self._ports:
-                g.create_task(port.stop())
-            self._ports.clear()
-            for port in self._sys_conf_ports.values():
-                g.create_task(port.stop())
-            self._sys_conf_ports.clear()
-            g.create_task(self._mgmt_port.stop())
-            self._mgmt_port = None
+            async with taskgroup.TaskGroup() as g:
+                for port in self._ports:
+                    g.create_task(port.stop())
+                self._ports.clear()
+                for port in self._sys_conf_ports.values():
+                    g.create_task(port.stop())
+                self._sys_conf_ports.clear()
+                g.create_task(self._mgmt_port.stop())
+                self._mgmt_port = None
+        finally:
+            pgcon = await self._acquire_sys_pgcon()
+            self._sys_pgcon_waiters = None
+            self.__sys_pgcon = None
+            pgcon.terminate()
 
     async def get_auth_method(self, user):
         authlist = self._sys_auth

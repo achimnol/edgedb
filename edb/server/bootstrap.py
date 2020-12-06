@@ -1135,11 +1135,20 @@ async def _bootstrap(
     schema = await _execute_edgeql_ddl(
         schema,
         f'CREATE DATABASE {edbdef.EDGEDB_SUPERUSER_DB}',
-        stdmode=False,
+        stdmode=True,
+    )
+
+    schema = await _execute_edgeql_ddl(
+        schema,
+        f'CREATE DATABASE {edbdef.EDGEDB_SYSTEM_DB}',
+        stdmode=True,
     )
 
     superuser_db = schema.get_global(
         s_db.Database, edbdef.EDGEDB_SUPERUSER_DB)
+
+    system_db = schema.get_global(
+        s_db.Database, edbdef.EDGEDB_SYSTEM_DB)
 
     await _ensure_edgedb_database(
         pgconn,
@@ -1148,6 +1157,16 @@ async def _bootstrap(
         cluster=cluster,
         objid=superuser_db.id,
     )
+
+    await _ensure_edgedb_database(
+        pgconn,
+        edbdef.EDGEDB_SYSTEM_DB,
+        edbdef.EDGEDB_SUPERUSER,
+        cluster=cluster,
+        objid=system_db.id,
+        builtin=True,
+    )
+
     if args['default_database_user']:
         await _ensure_edgedb_role(
             cluster,

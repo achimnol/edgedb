@@ -105,8 +105,6 @@ cdef class EdgeConnection:
         tuple max_protocol
         object timer
 
-        object __weakref__
-
     cdef parse_io_format(self, bytes mode)
     cdef parse_cardinality(self, bytes card)
     cdef parse_prepare_query_part(self, bint account_for_stmt_name)

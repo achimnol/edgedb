@@ -115,15 +115,6 @@ cdef class DatabaseConnectionView:
         self._tx_error = False
         self._invalidate_local_cache()
 
-    cdef on_remote_ddl(self, bytes new_dbver):
-        """Called when a DDL operation was performed by another client."""
-        if new_dbver != self._db._dbver:
-            self._db._signal_ddl(new_dbver)
-
-    cdef on_remote_config_change(self):
-        """Called when a CONFIGURE opration was performed by anoterh client."""
-        pass
-
     cdef rollback_tx_to_savepoint(self, spid, modaliases, config):
         self._tx_error = False
         # See also CompilerConnectionState.rollback_to_savepoint().
@@ -457,3 +448,19 @@ cdef class DatabaseIndex:
     def new_view(self, dbname: str, *, user: str, query_cache: bool):
         db = self._get_db(dbname)
         return (<Database>db)._new_view(user, query_cache)
+
+    def _on_remote_ddl(self, dbname, dbver):
+        """Called when a DDL operation was performed by another client."""
+        cdef Database db
+        try:
+            db = <Database>(self._dbs[dbname])
+        except KeyError:
+            return
+        if db._dbver != dbver:
+            db._signal_ddl(dbver)
+
+    def _on_remote_database_config_change(self, dbname):
+        """Called when a CONFIGURE opration was performed by another client."""
+
+    def _on_remote_system_config_change(self):
+        """Called when a CONFIGURE opration was performed by another client."""

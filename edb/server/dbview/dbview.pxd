@@ -74,9 +74,6 @@ cdef class DatabaseConnectionView:
     cdef _invalidate_local_cache(self)
     cdef _reset_tx_state(self)
 
-    cdef on_remote_ddl(self, bytes new_dbver)
-    cdef on_remote_config_change(self)
-
     cdef rollback_tx_to_savepoint(self, spid, modaliases, config)
     cdef recover_aliases_and_config(self, modaliases, config)
     cdef abort_tx(self)

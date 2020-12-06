@@ -957,35 +957,6 @@ class TestServerConfig(tb.QueryTestCase, tb.OldCLITestCaseMixin):
                 CONFIGURE CURRENT DATABASE RESET singleprop;
             ''')
 
-    async def test_server_proto_configure_msg(self):
-        msgs = []
-
-        def on_log(con, msg):
-            msgs.append(msg)
-
-        conn2 = await self.connect(database=self.get_database_name())
-
-        try:
-            conn2.add_log_listener(on_log)
-
-            await self.con.execute('''
-                CONFIGURE SYSTEM SET __internal_testvalue := 1;
-            ''')
-
-            await conn2.execute('SELECT 1')
-        finally:
-            await conn2.aclose()
-            await self.con.execute('''
-                CONFIGURE SYSTEM RESET __internal_testvalue;
-            ''')
-
-        for msg in msgs:
-            if (msg.get_severity_name() == 'DEBUG' and
-                    'received configuration reload request' in str(msg)):
-                break
-        else:
-            self.fail('a notice message was not delivered')
-
     async def test_server_version(self):
         srv_ver = await self.con.query_one(r"""
             SELECT sys::get_version()

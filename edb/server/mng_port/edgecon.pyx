@@ -194,21 +194,6 @@ cdef class EdgeConnection:
         self.max_protocol = max_protocol
         self.timer = Timer()
 
-    def on_remote_ddl(self, dbver):
-        if not self.dbview:
-            return
-        self.dbview.on_remote_ddl(dbver)
-
-    def on_remote_config_change(self):
-        if not self.dbview:
-            return
-        self.write_log(
-            EdgeSeverity.EDGE_SEVERITY_DEBUG,
-            errors.LogMessage.get_code(),
-            'received configuration reload request',
-        )
-        self.dbview.on_remote_config_change()
-
     cdef get_backend(self):
         if self._con_status is EDGECON_BAD:
             # `self.sync()` is called from `recover_from_error`;
@@ -315,7 +300,7 @@ cdef class EdgeConnection:
         logger.debug('received connection request by %s to database %s',
                      user, database)
 
-        if database == edbdef.EDGEDB_TEMPLATE_DB:
+        if database in edbdef.EDGEDB_SPECIAL_DBS:
             # Prevent connections to the system template database,
             # which only purpose is to serve as a template for new
             # databases.
@@ -462,7 +447,6 @@ cdef class EdgeConnection:
 
         self._backend = await self.port.new_backend(
             dbname=database, dbver=self.dbview.dbver)
-        self._backend.pgcon.set_edgecon(self)
         self._con_status = EDGECON_STARTED
 
     async def _get_role_record(self, user):
@@ -891,14 +875,20 @@ cdef class EdgeConnection:
             else:
                 side_effects = self.dbview.on_success(query_unit)
                 if side_effects & dbview.SideEffects.SchemaChanges:
-                    await self.get_backend().pgcon.signal_sysevent(
-                        'schema-changes', dbver=self.dbview.dbver.hex())
+                    await self.port.get_server()._signal_sysevent(
+                        'schema-changes',
+                        dbname=self.dbview.dbname,
+                        dbver=self.dbview.dbver.hex(),
+                    )
                 if side_effects & dbview.SideEffects.DatabaseConfigChanges:
-                    await self.get_backend().pgcon.signal_sysevent(
-                        'database-config-changes', dbname=self.dbview.dbname)
+                    await self.port.get_server()._signal_sysevent(
+                        'database-config-changes',
+                        dbname=self.dbview.dbname,
+                    )
                 if side_effects & dbview.SideEffects.SystemConfigChanges:
-                    await self.get_backend().pgcon.signal_sysevent(
-                        'system-config-changes')
+                    await self.port.get_server()._signal_sysevent(
+                        'system-config-changes',
+                    )
                 if query_unit.new_types:
                     new_type_ids |= query_unit.new_types
 
@@ -1274,13 +1264,18 @@ cdef class EdgeConnection:
         else:
             side_effects = self.dbview.on_success(query_unit)
             if side_effects & dbview.SideEffects.SchemaChanges:
-                await self.get_backend().pgcon.signal_sysevent(
-                    'schema-changes', dbver=self.dbview.dbver.hex())
+                await self.port.get_server()._signal_sysevent(
+                    'schema-changes',
+                    dbname=self.dbview.dbname,
+                    dbver=self.dbview.dbver.hex()
+                )
             if side_effects & dbview.SideEffects.DatabaseConfigChanges:
-                await self.get_backend().pgcon.signal_sysevent(
-                    'database-config-changes', dbname=self.dbview.dbname)
+                await self.port.get_server()._signal_sysevent(
+                    'database-config-changes',
+                    dbname=self.dbview.dbname
+                )
             if side_effects & dbview.SideEffects.SystemConfigChanges:
-                await self.get_backend().pgcon.signal_sysevent(
+                await self.port.get_server()._signal_sysevent(
                     'system-config-changes')
 
         self.write(self.make_command_complete_msg(query_unit))
@@ -1417,7 +1412,7 @@ cdef class EdgeConnection:
         if self.debug:
             self.debug_print(
                 'SYNC',
-                (<pgcon.PGProto>(self.get_backend().pgcon)).xact_status,
+                (<pgcon.PGConnection>(self.get_backend().pgcon)).xact_status,
             )
 
         self.flush()
@@ -1595,7 +1590,7 @@ cdef class EdgeConnection:
                 'exception': exc,
                 'protocol': self,
                 'transport': self._transport,
-            })
+        })
 
         exc_code = None
 
