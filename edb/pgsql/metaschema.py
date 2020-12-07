@@ -2485,7 +2485,10 @@ def _generate_database_views(schema):
             (SELECT id FROM edgedb."_SchemaObjectType"
                  WHERE name = 'sys::Database')
                 AS {qi(ptr_col_name(schema, Database, '__type__'))},
-            (datname = {ql(defines.EDGEDB_TEMPLATE_DB)})
+            (datname IN (
+                {ql(defines.EDGEDB_TEMPLATE_DB)},
+                {ql(defines.EDGEDB_SYSTEM_DB)}
+            ))
                 AS {qi(ptr_col_name(schema, Database, 'internal'))},
             datname AS {qi(ptr_col_name(schema, Database, 'name'))},
             datname AS {qi(ptr_col_name(schema, Database, 'name__internal'))},

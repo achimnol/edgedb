@@ -305,7 +305,7 @@ cdef class EdgeConnection:
             # which only purpose is to serve as a template for new
             # databases.
             raise errors.AccessError(
-                f'database {edbdef.EDGEDB_TEMPLATE_DB!r} does not '
+                f'database {database!r} does not '
                 f'accept connections'
             )
 
