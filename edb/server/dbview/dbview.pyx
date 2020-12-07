@@ -365,13 +365,12 @@ cdef class DatabaseIndex:
         return self._instance_data[key]
 
     async def reload_config(self):
-        conn = await self._server.new_pgcon(defines.EDGEDB_TEMPLATE_DB)
-
-        query = await self.get_sys_query(conn, 'config')
+        pgcon = await self._server._acquire_sys_pgcon()
         try:
-            result = await conn.simple_query(query, ignore_data=False)
+            query = await self.get_sys_query(pgcon, 'config')
+            result = await pgcon.simple_query(query, ignore_data=False)
         finally:
-            conn.terminate()
+            self._server._release_sys_pgcon()
 
         config_json = result[0][0].decode('utf-8')
         self._sys_config = config.from_json(config.get_settings(), config_json)

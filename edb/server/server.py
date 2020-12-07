@@ -113,12 +113,12 @@ class Server:
         self._sys_pgcon_waiters = None
 
     async def init(self):
-        self._dbindex = await dbview.DatabaseIndex.init(self)
-
         self.__sys_pgcon = await self.new_pgcon(defines.EDGEDB_SYSTEM_DB)
         await self.__sys_pgcon.set_server(self)
         self._sys_pgcon_waiters = asyncio.Queue()
         self._sys_pgcon_waiters.put_nowait(self.__sys_pgcon)
+
+        self._dbindex = await dbview.DatabaseIndex.init(self)
 
         self._populate_sys_auth()
 
