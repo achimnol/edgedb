@@ -547,7 +547,8 @@ async def _init_stdlib(cluster, conn, testmode, global_ids):
 
     stdlib_cache = 'backend-stdlib.pickle'
     tpldbdump_cache = 'backend-tpldbdump.sql'
-    src_hash = buildmeta.hash_dirs(CACHE_SRC_DIRS)
+    src_hash = buildmeta.hash_dirs(CACHE_SRC_DIRS, extra_files=[__file__])
+
     stdlib = buildmeta.read_data_cache(
         src_hash, stdlib_cache, source_dir=cache_dir)
     tpldbdump = buildmeta.read_data_cache(
