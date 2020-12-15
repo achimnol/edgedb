@@ -946,7 +946,8 @@ class CommandContext:
         self.renames: Dict[sn.Name, sn.Name] = {}
         self.early_renames: Dict[sn.Name, sn.Name] = {}
         self.renamed_objs: Set[so.Object] = set()
-        self.altered_targets: Set[so.Object] = set()
+        self.change_log: Dict[Tuple[Type[so.Object], str], Set[so.Object]] = (
+            collections.defaultdict(set))
         self.schema_object_ids = schema_object_ids
         self.backend_runtime_params = backend_runtime_params
         self.affected_finalization: \
@@ -1416,7 +1417,7 @@ class ObjectCommand(Command, Generic[so.Object_T]):
                         dummy = None
 
                     # We need to extract the command on whatever the
-                    # enclosing object of our referer is, since we
+                    # enclosing object of our referrer is, since we
                     # need to put that in the context so that
                     # compile_expr_field calls in the fixer can find
                     # the subject.
@@ -1425,7 +1426,7 @@ class ObjectCommand(Command, Generic[so.Object_T]):
                     obj = obj_cmd.get_object(schema, context)
 
                     for fn in fns:
-                        # Do the switcheraroos
+                        # Do the switcheroos
                         value = ref.get_explicit_field_value(schema, fn, None)
                         if value is None:
                             continue

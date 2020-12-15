@@ -1989,7 +1989,7 @@ class TestEdgeQLDDL(tb.DDLTestCase):
     async def test_edgeql_ddl_link_target_alter_02(self):
         with self.assertRaisesRegex(
                 edgedb.SchemaDefinitionError,
-                "cannot change the target type of inherited property 'foo'"):
+                "cannot alter the type of inherited property 'foo'"):
             await self.con.execute("""
                 CREATE TYPE test::Parent01 {
                     CREATE PROPERTY foo -> int64;

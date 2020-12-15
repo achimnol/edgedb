@@ -1776,8 +1776,6 @@ class AlterFunction(AlterCallableObject[Function], FunctionCommand):
         if not self.has_attribute_value("volatility"):
             return schema
 
-        context.altered_targets.add(scls)
-
         vn = scls.get_verbosename(schema, with_parent=True)
         schema = self._propagate_if_expr_refs(
             schema, context, metadata_only=False,
