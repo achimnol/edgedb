@@ -623,11 +623,12 @@ class Command(struct.MixedStruct, metaclass=CommandMeta):
 
     def get_nonattr_subcommand_count(self) -> int:
         count = 0
+        attr_cmds = (AlterObjectProperty, AlterSpecialObjectField)
         for op in self.ops:
-            if not isinstance(op, AlterObjectProperty):
+            if not isinstance(op, attr_cmds):
                 count += 1
         for op in self.before_ops:
-            if not isinstance(op, AlterObjectProperty):
+            if not isinstance(op, attr_cmds):
                 count += 1
         return count
 
@@ -3032,6 +3033,143 @@ class DeleteObject(ObjectCommand[so.Object_T], Generic[so.Object_T]):
         return schema
 
 
+special_field_alter_handlers: Dict[
+    str,
+    Dict[Type[so.Object], Type[AlterSpecialObjectField[so.Object]]],
+] = {}
+
+
+class AlterSpecialObjectField(AlterObjectFragment[so.Object_T]):
+    """Base class for AlterObjectFragment implementations for special fields.
+
+    When the generic `AlterObjectProperty` handling of field value transitions
+    is insufficient, declare a subclass of this to implement custom handling.
+    """
+
+    def __init_subclass__(
+        cls,
+        *,
+        field: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__(**kwargs)
+
+        if field is None:
+            if any(
+                issubclass(b, AlterSpecialObjectField)
+                for b in cls.__mro__[1:]
+            ):
+                return
+            else:
+                raise TypeError(
+                    "AlterSpecialObjectField.__init_subclass__() missing "
+                    "1 required keyword-only argument: 'field'"
+                )
+
+        handlers = special_field_alter_handlers.get(field)
+        if handlers is None:
+            handlers = special_field_alter_handlers[field] = {}
+
+        schema_metaclass = cls.get_schema_metaclass()
+        handlers[schema_metaclass] = cls  # type: ignore
+
+    @classmethod
+    def _cmd_from_ast(
+        cls,
+        schema: s_schema.Schema,
+        astnode: qlast.DDLOperation,
+        context: CommandContext,
+    ) -> ObjectCommand[so.Object_T]:
+        this_op = context.current().op
+        assert isinstance(this_op, ObjectCommand)
+        return cls(classname=this_op.classname)
+
+    @classmethod
+    def _cmd_tree_from_ast(
+        cls,
+        schema: s_schema.Schema,
+        astnode: qlast.DDLOperation,
+        context: CommandContext,
+    ) -> Command:
+        assert isinstance(astnode, qlast.SetField)
+        cmd = super()._cmd_tree_from_ast(schema, astnode, context)
+        cmd.add(AlterObjectProperty.regular_cmd_from_ast(
+            schema, astnode, context))
+        return cmd
+
+    @classmethod
+    def from_diff(
+        cls,
+        *,
+        orig_object_name: sn.Name,
+        field: str,
+        value: Any,
+        orig_value: Any = None,
+        inherited: bool = False,
+        orig_inherited: Optional[bool] = None,
+        computed: bool = False,
+        from_default: bool = False,
+        orig_computed: Optional[bool] = None,
+        source_context: Optional[parsing.ParserContext] = None,
+    ) -> ObjectCommand[so.Object_T]:
+        op = cls(classname=orig_object_name)
+        op.set_attribute_value(
+            field,
+            value=value,
+            orig_value=orig_value,
+            inherited=inherited,
+            orig_inherited=orig_inherited,
+            computed=computed,
+            orig_computed=orig_computed,
+            from_default=from_default,
+            source_context=source_context,
+        )
+        return op
+
+    def _get_ast(
+        self,
+        schema: s_schema.Schema,
+        context: CommandContext,
+        *,
+        parent_node: Optional[qlast.DDLOperation] = None,
+    ) -> Optional[qlast.DDLOperation]:
+        attrs = self.enumerate_attribute_cmds()
+        assert len(attrs) == 1, "expected one attribute command"
+        return attrs[0]._get_ast(schema, context, parent_node=parent_node)
+
+
+def get_special_field_alter_handler(
+    field: str,
+    schema_cls: Type[so.Object],
+) -> Optional[Type[AlterSpecialObjectField[so.Object]]]:
+    """Return a custom handler for the field value transition, if any.
+
+    Returns a subclass of AlterSpecialObjectField, when in the context
+    of an AlterObject operation, and a special handler has been declared.
+    """
+    field_handlers = special_field_alter_handlers.get(field)
+    if field_handlers is None:
+        return None
+    return field_handlers.get(schema_cls)
+
+
+def get_special_field_alter_handler_for_context(
+    field: str,
+    context: CommandContext,
+) -> Optional[Type[AlterSpecialObjectField[so.Object]]]:
+    """Return a custom handler for the field value transition, if any.
+
+    Returns a subclass of AlterSpecialObjectField, when in the context
+    of an AlterObject operation, and a special handler has been declared.
+    """
+    this_op = context.current().op
+    if not isinstance(this_op, AlterObject):
+        return None
+    else:
+        mcls = this_op.get_schema_metaclass()
+        return get_special_field_alter_handler(field, mcls)
+
+
 class AlterObjectProperty(Command):
     astnode = qlast.SetField
 
@@ -3050,11 +3188,23 @@ class AlterObjectProperty(Command):
         schema: s_schema.Schema,
         astnode: qlast.DDLOperation,
         context: CommandContext,
+    ) -> Command:
+        assert isinstance(astnode, qlast.SetField)
+        handler = get_special_field_alter_handler_for_context(
+            astnode.name, context)
+        if handler is not None:
+            return handler._cmd_tree_from_ast(schema, astnode, context)
+        else:
+            return cls.regular_cmd_from_ast(schema, astnode, context)
+
+    @classmethod
+    def regular_cmd_from_ast(
+        cls,
+        schema: s_schema.Schema,
+        astnode: qlast.SetField,
+        context: CommandContext,
     ) -> AlterObjectProperty:
-        assert isinstance(astnode, qlast.BaseSetField)
-
         propname = astnode.name
-
         parent_ctx = context.current()
         parent_op = parent_ctx.op
         assert isinstance(parent_op, ObjectCommand)
@@ -3164,7 +3314,10 @@ class AlterObjectProperty(Command):
 
         if (
             not field.allow_ddl_set
-            and not field.special_ddl_syntax
+            and not (
+                field.special_ddl_syntax
+                and isinstance(parent_node, qlast.AlterObject)
+            )
             and self.property != 'expr'
             and parent_node_attr is None
         ):
@@ -3178,8 +3331,11 @@ class AlterObjectProperty(Command):
             return None
 
         if (
-            (self.new_inherited and not self.old_inherited)
-            or (
+            (
+                self.new_inherited
+                and not self.old_inherited
+                and not old_value_empty
+            ) or (
                 self.new_computed
                 and not self.old_computed
                 and not self.old_inherited

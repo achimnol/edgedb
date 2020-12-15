@@ -53,40 +53,6 @@ class ReferencedObject(so.DerivableObject):
         reflection_method=so.ReflectionMethod.AS_LINK,
     )
 
-    def record_field_alter_delta(
-        self: ReferencedT,
-        schema: s_schema.Schema,
-        delta: sd.ObjectCommand[ReferencedT],
-        context: so.ComparisonContext,
-        *,
-        fname: str,
-        value: Any,
-        orig_value: Any,
-        orig_schema: s_schema.Schema,
-        orig_object: ReferencedT,
-        confidence: float,
-    ) -> None:
-        if fname == 'is_owned':
-            owned_op = orig_object.init_delta_command(orig_schema, AlterOwned)
-            owned_op.set_attribute_value(
-                'is_owned',
-                value,
-                orig_value=orig_value,
-            )
-            delta.add(owned_op)
-        else:
-            super().record_field_alter_delta(
-                schema,
-                delta,
-                context,
-                fname=fname,
-                value=value,
-                orig_value=orig_value,
-                orig_schema=orig_schema,
-                orig_object=orig_object,
-                confidence=confidence,
-            )
-
     def get_subject(self, schema: s_schema.Schema) -> Optional[so.Object]:
         # NB: classes that inherit ReferencedObject define a `get_subject`
         # method dynamically, with `subject = SchemaField`
@@ -374,8 +340,9 @@ class ReferencedObjectCommandBase(sd.QualifiedObjectCommand[ReferencedT]):
         referrer_context_class: Optional[
             Type[sd.ObjectCommandContext[so.Object]]
         ] = None,
+        **kwargs: Any,
     ) -> None:
-        super().__init_subclass__()
+        super().__init_subclass__(**kwargs)
         if referrer_context_class is not None:
             cls._referrer_context_class = referrer_context_class
 

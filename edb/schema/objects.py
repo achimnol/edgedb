@@ -2942,9 +2942,26 @@ class InheritingObject(SubclassableObject):
         computed_fields = self.get_computed_fields(schema)
         is_computed = fname in computed_fields
         if orig_schema is not None and orig_object is not None:
+            from . import delta as sd
+
             orig_computed_fields = (
                 orig_object.get_computed_fields(orig_schema))
             orig_is_computed = fname in orig_computed_fields
+
+            shandler = sd.get_special_field_alter_handler(fname, type(self))
+            if shandler is not None:
+                delta.add(shandler.from_diff(
+                    orig_object_name=orig_object.get_name(orig_schema),
+                    field=fname,
+                    value=value,
+                    orig_value=orig_value,
+                    inherited=is_inherited,
+                    orig_inherited=orig_is_inherited,
+                    computed=is_computed,
+                    orig_computed=orig_is_computed,
+                    from_default=from_default,
+                ))
+                return
         else:
             orig_is_computed = is_computed
 
