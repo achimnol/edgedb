@@ -1772,7 +1772,7 @@ class AlterFunction(AlterCallableObject[Function], FunctionCommand):
         schema = super()._alter_begin(schema, context)
         scls = self.scls
 
-        # If volatilitiy changed, propagate that to referring exprs
+        # If volatility changed, propagate that to referring exprs
         if not self.has_attribute_value("volatility"):
             return schema
 

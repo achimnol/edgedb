@@ -817,7 +817,6 @@ class ReferencedInheritingObjectCommand(
         schema: s_schema.Schema,
         context: sd.CommandContext,
         field_name: str,
-        action: str,
         require_inheritance_consistency: bool = True,
     ) -> s_schema.Schema:
         """Validate and propagate a field alteration to children.
@@ -854,9 +853,14 @@ class ReferencedInheritingObjectCommand(
                 )
 
                 vn = scls.get_verbosename(schema, with_parent=True)
+                desc = self.get_friendly_description(
+                    schema,
+                    context,
+                    object_desc=f'inherited {vn}',
+                )
 
                 raise errors.SchemaDefinitionError(
-                    f'cannot {action} of inherited {vn}',
+                    f'cannot {desc}',
                     details=(
                         f'{vn} is inherited from '
                         f'{bases_str}'

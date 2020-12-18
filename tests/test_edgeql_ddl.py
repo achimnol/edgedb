@@ -2256,7 +2256,7 @@ class TestEdgeQLDDL(tb.DDLTestCase):
     async def test_edgeql_ddl_bad_07(self):
         with self.assertRaisesRegex(
                 edgedb.SchemaDefinitionError,
-                r"invalid mutation in computable 'foo'"):
+                r"invalid mutation in computable link 'foo'"):
             async with self.con.transaction():
                 await self.con.execute(r"""
                     CREATE TYPE test::Foo;
@@ -2269,7 +2269,7 @@ class TestEdgeQLDDL(tb.DDLTestCase):
     async def test_edgeql_ddl_bad_08(self):
         with self.assertRaisesRegex(
                 edgedb.SchemaDefinitionError,
-                r"invalid mutation in computable 'foo'"):
+                r"invalid mutation in computable link 'foo'"):
             async with self.con.transaction():
                 await self.con.execute(r"""
                     CREATE TYPE test::Foo;
@@ -2285,7 +2285,7 @@ class TestEdgeQLDDL(tb.DDLTestCase):
     async def test_edgeql_ddl_bad_09(self):
         with self.assertRaisesRegex(
                 edgedb.SchemaDefinitionError,
-                r"invalid mutation in computable 'foo'"):
+                r"invalid mutation in computable property 'foo'"):
             async with self.con.transaction():
                 await self.con.execute(r"""
                     CREATE TYPE test::Foo;
@@ -3419,9 +3419,7 @@ class TestEdgeQLDDL(tb.DDLTestCase):
     async def test_edgeql_ddl_function_volatility_04(self):
         with self.assertRaisesRegex(
                 edgedb.InvalidFunctionDefinitionError,
-                r"(?s)volatility mismatch in function declared as stable"
-                r".*Actual volatility is volatile"):
-
+                r"(?s)volatility mismatch in function declared as stable"):
             await self.con.execute('''
                 CREATE FUNCTION test::foo() -> int64 {
                     USING (SELECT <int64>random());
@@ -3432,9 +3430,7 @@ class TestEdgeQLDDL(tb.DDLTestCase):
     async def test_edgeql_ddl_function_volatility_05(self):
         with self.assertRaisesRegex(
                 edgedb.InvalidFunctionDefinitionError,
-                r"(?s)volatility mismatch in function declared as immutable"
-                r".*Actual volatility is stable"):
-
+                r"(?s)volatility mismatch in function declared as immutable"):
             await self.con.execute('''
                 CREATE FUNCTION test::foo() -> int64 {
                     USING (SELECT count(Object));
@@ -3564,8 +3560,11 @@ class TestEdgeQLDDL(tb.DDLTestCase):
         ''')
 
         async with self.assertRaisesRegexTx(
-                edgedb.InvalidFunctionDefinitionError,
-                'volatility mismatch in function declared as stable'):
+            edgedb.SchemaDefinitionError,
+            r"cannot alter function 'test::foo\(\)' because this affects "
+            r".*function 'test::bar\(\)'",
+
+        ):
             await self.con.execute('''
                 ALTER FUNCTION test::foo() SET volatility := "volatile";
             ''')

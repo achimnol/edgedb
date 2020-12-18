@@ -367,6 +367,21 @@ class Command(struct.MixedStruct, metaclass=CommandMeta):
         result.before_ops = [op.copy() for op in self.before_ops]
         return result
 
+    def get_friendly_description(
+        self,
+        schema: s_schema.Schema,
+        context: CommandContext,
+        *,
+        object: Any = None,
+        object_desc: Optional[str] = None,
+    ) -> str:
+        """Return a friendly description of this command in imperative mood.
+
+        The result is used in error messages and other user-facing renderings
+        of the command.
+        """
+        raise NotImplementedError
+
     @classmethod
     def adapt(cls: Type[Command_T], obj: Command) -> Command_T:
         result = obj.copy_with_class(cls)
@@ -950,8 +965,10 @@ class CommandContext:
             collections.defaultdict(set))
         self.schema_object_ids = schema_object_ids
         self.backend_runtime_params = backend_runtime_params
-        self.affected_finalization: \
-            Dict[Command, List[Tuple[DeltaRoot, Command]]] = dict()
+        self.affected_finalization: Dict[
+            Command,
+            List[Tuple[DeltaRoot, Command, List[str]]],
+        ] = collections.defaultdict(list)
         self.compat_ver = compat_ver
 
     @property
@@ -1375,6 +1392,17 @@ class ObjectCommand(Command, Generic[so.Object_T]):
                 cmd_drop: Command
                 cmd_create: Command
 
+                this_ref_desc = []
+                for fn in fns:
+                    if fn == 'expr':
+                        fdesc = 'expression'
+                    else:
+                        fdesc = f"{fn.replace('_', ' ')} expression"
+
+                    vn = ref.get_verbosename(schema, with_parent=True)
+
+                    this_ref_desc.append(f'{fdesc} of {vn}')
+
                 if isinstance(
                     ref,
                     (
@@ -1441,21 +1469,13 @@ class ObjectCommand(Command, Generic[so.Object_T]):
                         cmd_drop.set_attribute_value(fn, dummy)
                         cmd_create.set_attribute_value(fn, value)
 
-                    context.affected_finalization.setdefault(self, []).append(
-                        (delta_create, cmd_create)
+                    context.affected_finalization[self].append(
+                        (delta_create, cmd_create, this_ref_desc)
                     )
                     schema = delta_drop.apply(schema, context)
                     continue
 
-                for fn in fns:
-                    if fn == 'expr':
-                        fdesc = 'expression'
-                    else:
-                        fdesc = f"{fn.replace('_', ' ')} expression"
-
-                    vn = ref.get_verbosename(schema, with_parent=True)
-
-                    ref_desc.append(f'{fdesc} of {vn}')
+                ref_desc.extend(this_ref_desc)
 
             if ref_desc:
                 expr_s = (
@@ -1599,23 +1619,29 @@ class ObjectCommand(Command, Generic[so.Object_T]):
         schema: s_schema.Schema,
         context: CommandContext,
     ) -> s_schema.Schema:
-        for delta, cmd in context.affected_finalization.get(
-            self, []
-        ):
-            self._finalize_affected_refs_specialize(cmd, schema, context)
+        for delta, cmd, refdesc in context.affected_finalization.get(self, []):
+            try:
+                self._finalize_affected_refs_specialize(cmd, schema, context)
 
-            schema = delta.apply(schema, context)
+                schema = delta.apply(schema, context)
 
-            if not context.canonical and delta:
-                # We need to force the attributes to be resolved so
-                # that expressions get compiled *now* under a schema
-                # where they are correct, and not later, when more
-                # renames may have broken them.
-                assert isinstance(cmd, ObjectCommand)
-                for key, value in cmd.get_resolved_attributes(
-                        schema, context).items():
-                    cmd.set_attribute_value(key, value)
-                self.add(delta)
+                if not context.canonical and delta:
+                    # We need to force the attributes to be resolved so
+                    # that expressions get compiled *now* under a schema
+                    # where they are correct, and not later, when more
+                    # renames may have broken them.
+                    assert isinstance(cmd, ObjectCommand)
+                    for key, value in cmd.get_resolved_attributes(
+                            schema, context).items():
+                        cmd.set_attribute_value(key, value)
+                    self.add(delta)
+            except errors.QueryError as e:
+                desc = self.get_friendly_description(schema, context)
+                raise errors.SchemaDefinitionError(
+                    f'cannot {desc} because this affects'
+                    f' {" and ".join(refdesc)}',
+                    details=e.args[0],
+                ) from e
 
         return schema
 
@@ -1883,13 +1909,34 @@ class ObjectCommand(Command, Generic[so.Object_T]):
                     f'module {modname} is read-only',
                     context=self.source_context)
 
-    def get_verbosename(self) -> str:
+    def get_verbosename(self, parent: Optional[str] = None) -> str:
         mcls = self.get_schema_metaclass()
-        return mcls.get_verbosename_static(self.classname)
+        return mcls.get_verbosename_static(self.classname, parent=parent)
 
     def get_displayname(self) -> str:
         mcls = self.get_schema_metaclass()
         return mcls.get_displayname_static(self.classname)
+
+    def get_friendly_object_name_for_description(
+        self,
+        schema: s_schema.Schema,
+        context: CommandContext,
+        *,
+        object: Optional[so.Object_T] = None,
+        object_desc: Optional[str] = None,
+    ) -> str:
+        if object_desc is not None:
+            return object_desc
+        else:
+            if object is None:
+                object = self.scls
+
+            if object is _dummy_object:
+                object_desc = self.get_verbosename()
+            else:
+                object_desc = object.get_verbosename(schema, with_parent=True)
+
+            return object_desc
 
     @overload
     def get_object(
@@ -2305,6 +2352,22 @@ class CreateObject(ObjectCommand[so.Object_T], Generic[so.Object_T]):
 
         return cmd
 
+    def get_friendly_description(
+        self,
+        schema: s_schema.Schema,
+        context: CommandContext,
+        *,
+        object: Optional[so.Object_T] = None,
+        object_desc: Optional[str] = None,
+    ) -> str:
+        object_desc = self.get_friendly_object_name_for_description(
+            schema,
+            context,
+            object=object,
+            object_desc=object_desc,
+        )
+        return f'create {object_desc}'
+
     def validate_create(
         self,
         schema: s_schema.Schema,
@@ -2509,6 +2572,22 @@ class RenameObject(AlterObjectFragment[so.Object_T]):
     astnode = qlast.Rename
 
     new_name = struct.Field(sn.Name)
+
+    def get_friendly_description(
+        self,
+        schema: s_schema.Schema,
+        context: CommandContext,
+        *,
+        object: Optional[so.Object_T] = None,
+        object_desc: Optional[str] = None,
+    ) -> str:
+        object_desc = self.get_friendly_object_name_for_description(
+            schema,
+            context,
+            object=object,
+            object_desc=object_desc,
+        )
+        return f'rename {object_desc}'
 
     def _fix_referencing_expr(
         self,
@@ -2785,6 +2864,22 @@ class AlterObject(ObjectCommand[so.Object_T], Generic[so.Object_T]):
     #: If True, only apply changes to properties, not "real" schema changes
     metadata_only = struct.Field(bool, default=False)
 
+    def get_friendly_description(
+        self,
+        schema: s_schema.Schema,
+        context: CommandContext,
+        *,
+        object: Optional[so.Object_T] = None,
+        object_desc: Optional[str] = None,
+    ) -> str:
+        object_desc = self.get_friendly_object_name_for_description(
+            schema,
+            context,
+            object=object,
+            object_desc=object_desc,
+        )
+        return f'alter {object_desc}'
+
     @classmethod
     def _cmd_tree_from_ast(
         cls,
@@ -2899,6 +2994,22 @@ class DeleteObject(ObjectCommand[so.Object_T], Generic[so.Object_T]):
     #: deleted, which we use to resolve if_unused.
     expiring_refs = struct.Field(AbstractSet[so.Object],
                                  default=frozenset())
+
+    def get_friendly_description(
+        self,
+        schema: s_schema.Schema,
+        context: CommandContext,
+        *,
+        object: Optional[so.Object_T] = None,
+        object_desc: Optional[str] = None,
+    ) -> str:
+        object_desc = self.get_friendly_object_name_for_description(
+            schema,
+            context,
+            object=object,
+            object_desc=object_desc,
+        )
+        return f'drop {object_desc}'
 
     def _delete_begin(
         self,
@@ -3047,6 +3158,8 @@ class AlterSpecialObjectField(AlterObjectFragment[so.Object_T]):
     is insufficient, declare a subclass of this to implement custom handling.
     """
 
+    _field: ClassVar[str]
+
     def __init_subclass__(
         cls,
         *,
@@ -3073,6 +3186,7 @@ class AlterSpecialObjectField(AlterObjectFragment[so.Object_T]):
 
         schema_metaclass = cls.get_schema_metaclass()
         handlers[schema_metaclass] = cls  # type: ignore
+        cls._field = field
 
     @classmethod
     def _cmd_from_ast(
@@ -3137,6 +3251,22 @@ class AlterSpecialObjectField(AlterObjectFragment[so.Object_T]):
         attrs = self.enumerate_attribute_cmds()
         assert len(attrs) == 1, "expected one attribute command"
         return attrs[0]._get_ast(schema, context, parent_node=parent_node)
+
+    def get_friendly_description(
+        self,
+        schema: s_schema.Schema,
+        context: CommandContext,
+        *,
+        object: Optional[so.Object_T] = None,
+        object_desc: Optional[str] = None,
+    ) -> str:
+        object_desc = self.get_friendly_object_name_for_description(
+            schema,
+            context,
+            object=object,
+            object_desc=object_desc,
+        )
+        return f'alter the {self._field} of {object_desc}'
 
 
 def get_special_field_alter_handler(
@@ -3493,6 +3623,25 @@ class AlterObjectProperty(Command):
         return '<%s.%s "%s":"%s"->"%s">' % (
             self.__class__.__module__, self.__class__.__name__,
             self.property, self.old_value, self.new_value)
+
+    def get_friendly_description(
+        self,
+        schema: s_schema.Schema,
+        context: CommandContext,
+        *,
+        object: Optional[so.Object_T] = None,
+        object_desc: Optional[str] = None,
+    ) -> str:
+        parent_ctx = context.current()
+        parent_op = parent_ctx.op
+        assert isinstance(parent_op, ObjectCommand)
+        object_desc = parent_op.get_friendly_object_name_for_description(
+            schema,
+            context,
+            object=object,
+            object_desc=object_desc,
+        )
+        return f'alter the {self.property} of {object_desc}'
 
 
 def compile_ddl(

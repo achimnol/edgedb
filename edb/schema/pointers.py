@@ -973,7 +973,8 @@ class PointerCommandOrFragment(
 
         source = schema.get(source_name, type=s_objtypes.ObjectType)
 
-        ptr_name = self.get_displayname()
+        parent_vname = source.get_verbosename(schema)
+        ptr_name = self.get_verbosename(parent=parent_vname)
         expression = s_expr.Expression.compiled(
             s_expr.Expression.from_ast(expr, schema, context.modaliases),
             schema=schema,
@@ -982,7 +983,7 @@ class PointerCommandOrFragment(
                 anchors={qlast.Source().name: source},
                 path_prefix_anchor=qlast.Source().name,
                 singletons=frozenset([source]),
-                in_ddl_context_name=f'computable {ptr_name!r}',
+                in_ddl_context_name=f'computable {ptr_name}',
                 apply_query_rewrites=not context.stdmode,
             ),
         )
@@ -1038,8 +1039,8 @@ class PointerCommandOrFragment(
             raise errors.SchemaDefinitionError(
                 f'possibly an empty set returned by an '
                 f'expression for the computable '
-                f'{ptr_name!r} '
-                f"declared as 'required'",
+                f'{ptr_name} '
+                f"explicitly declared as 'required'",
                 context=srcctx
             )
 
@@ -1051,8 +1052,8 @@ class PointerCommandOrFragment(
             raise errors.SchemaDefinitionError(
                 f'possibly more than one element returned by an '
                 f'expression for the computable '
-                f'{ptr_name!r} '
-                f"declared as 'single'",
+                f'{ptr_name} '
+                f"explicitly declared as 'single'",
                 context=srcctx
             )
 
@@ -1437,6 +1438,22 @@ class SetPointerType(
     PointerCommandOrFragment[Pointer_T],
 ):
 
+    def get_friendly_description(
+        self,
+        schema: s_schema.Schema,
+        context: sd.CommandContext,
+        *,
+        object: Optional[Pointer_T] = None,
+        object_desc: Optional[str] = None,
+    ) -> str:
+        object_desc = self.get_friendly_object_name_for_description(
+            schema,
+            context,
+            object=object,
+            object_desc=object_desc,
+        )
+        return f'alter the type of {object_desc}'
+
     def _alter_begin(
         self,
         schema: s_schema.Schema,
@@ -1470,7 +1487,6 @@ class SetPointerType(
                 schema,
                 context,
                 field_name='target',
-                action='alter the type',
             )
 
         return schema
@@ -1559,7 +1575,6 @@ class AlterPointerUpperCardinality(
                 schema,
                 context,
                 field_name='cardinality',
-                action='alter the cardinality',
             )
 
         return schema
